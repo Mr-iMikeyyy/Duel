@@ -11,6 +11,7 @@ import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.command.argument.DimensionArgumentType;
 import net.minecraft.command.argument.EntityArgumentType;
+import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.command.CommandManager;
 import net.minecraft.server.command.ServerCommandSource;
 import net.minecraft.server.network.ServerPlayerEntity;
@@ -26,6 +27,7 @@ import java.awt.*;
 public class Duel implements ModInitializer {
     public static final String MOD_ID = "duel";
 
+    private static MinecraftServer serverInstance;
     // This logger is used to write text to the console and the log file.
     // It is considered best practice to use your mod id as the logger's name.
     // That way, it's clear which mod wrote info, warnings, and errors.
@@ -36,8 +38,11 @@ public class Duel implements ModInitializer {
         // This code runs as soon as Minecraft is in a mod-load-ready state.
         // However, some things (like resources) may still be uninitialized.
         // Proceed with mild caution.
+        ServerLifecycleEvents.SERVER_STARTED.register(server -> {
+            serverInstance = server;
+        });
         DuelEventHandler.register();
-
+        registerCommands(serverInstance.getCommandManager().getDispatcher());
         LOGGER.info("Duel has been initialized");
     }
 
