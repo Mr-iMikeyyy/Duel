@@ -1,31 +1,72 @@
 package net.madmike.duel;
 
+import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.server.world.ServerWorld;
+import org.spongepowered.include.com.google.gson.Gson;
+import org.spongepowered.include.com.google.gson.GsonBuilder;
+import org.spongepowered.include.com.google.gson.JsonSyntaxException;
 
+import java.io.IOException;
+import java.io.Reader;
+import java.io.Writer;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.HashMap;
-import java.util.Map;
+import java.util.Set;
 
 public class DuelMapManager {
-    private static final Map<String, DuelMap> maps = new HashMap<>();
 
-    public static boolean addMap(String name, ServerWorld dim) {
-        if (maps.containsKey(name)) {
-            return false; // Map already exists
+    private static final Path CONFIG_PATH = FabricLoader.getInstance().getConfigDir().resolve("duel/MAPS.json");
+    private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
+    private final HashMap<String, DuelMap> duelMaps = new HashMap<>();
+
+    /** Load the config file or create it with default values **/
+    public static DuelMapManager load() {
+        if (Files.exists(CONFIG_PATH)) {
+            try (Reader reader = Files.newBufferedReader(CONFIG_PATH)) {
+                return GSON.fromJson(reader, DuelMapManager.class);
+            } catch (IOException | JsonSyntaxException e) {
+                e.printStackTrace();
+            }
         }
-        maps.put(name, new DuelMap(name, dim));
-        return true;
+
+        // Create a default config if file doesn't exist
+        DuelMapManager defaultConfig = new DuelMapManager();
+        defaultConfig.save();
+        return defaultConfig;
     }
 
-    public static DuelMap getMap(String name) {
-        return maps.get(name);
+    /** Save the config file **/
+    public void save() {
+        try (Writer writer = Files.newBufferedWriter(CONFIG_PATH)) {
+            GSON.toJson(this, writer);
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
     }
 
-    public static boolean hasMap(String name) {
-        return maps.containsKey(name);
+    public void addMap(String name, ServerWorld dim) {
+        duelMaps.put(name, new DuelMap(name, dim));
     }
 
-    public static String listMaps() {
-        return String.join(", ", maps.keySet());
+    public DuelMap getMap(String name) {
+        return duelMaps.get(name);
+    }
+
+    public boolean hasMap(String name) {
+        return duelMaps.containsKey(name);
+    }
+
+    public String listMaps() {
+        return String.join(", ", duelMaps.keySet());
+    }
+
+    public void removeMap(String mapName) {
+        duelMaps.remove(mapName);
+    }
+
+    public HashMap<String, DuelMap> getMaps() {
+        return duelMaps;
     }
 }
 

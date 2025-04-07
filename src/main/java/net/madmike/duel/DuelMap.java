@@ -39,10 +39,6 @@ public class DuelMap {
         return world;
     }
 
-    public void setWorld(ServerWorld world) {
-        this.world = world;
-    }
-
     public BlockPos getViewingSpawn() {
         return viewingSpawn;
     }

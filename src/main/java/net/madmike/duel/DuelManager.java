@@ -1,108 +1,161 @@
 package net.madmike.duel;
 
-import net.fabricmc.fabric.api.entity.event.v1.ServerLivingEntityEvents;
-import net.minecraft.entity.damage.DamageSource;
+import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
-import net.minecraft.server.MinecraftServer;
-import net.minecraft.server.command.ServerCommandSource;
 import net.minecraft.server.network.ServerPlayerEntity;
 import net.minecraft.server.world.ServerWorld;
 import net.minecraft.text.Text;
 import net.minecraft.util.Formatting;
-import net.minecraft.util.math.BlockPos;
-import net.minecraft.util.math.Vec3d;
 
 import java.util.*;
 
-import net.madmike.duel.DuelMapManager;
-import net.minecraft.world.GameRules;
-
 public class DuelManager {
 
-    private static ServerPlayerEntity challenger = null;
-    private static ServerPlayerEntity challenged = null;
 
-    private static Timer duelRequestTimer = null;
-    private static Timer duelTimer = null;
+    // FIELDS
 
-    private static DuelMap selectedMap = null;
+    private ServerPlayerEntity challenger = null;
+    private ServerPlayerEntity challenged = null;
 
-    public static final Map<UUID, Integer> playerLives = new HashMap<>();
+    private DuelMap selectedMap = null;
 
-    public static Map<UUID, BlockPos> originalPos = new HashMap<>();
-    public static  Map<UUID, ServerWorld> originalWorld = new HashMap<>();
+    private final Timer duelRequestTimer = new Timer();
+    private final Timer duelTimer = new Timer();
+    private final Timer countdownTimer = new Timer();
+
+    private boolean duelOngoing = false;
+    private boolean duelRequestActive = false;
+    private boolean serverRestarting = false;
+
+    private final Map<UUID, Integer> duelLives = new HashMap<>();
+
+    private final DuelTeleportManager dtm = DuelTeleportManager.load();
+
+    private final DuelStatManager dsm = DuelStatManager.load();
+
+    private final DuelWagerManager dwm = DuelWagerManager.load();
+
+    private final DuelMapManager dmm = DuelMapManager.load();
+
+    private final DuelBannedItemManager dbm = DuelBannedItemManager.load();
 
 
-    public static boolean sendDuelRequest(ServerPlayerEntity sender, ServerPlayerEntity receiver, String mapName) {
-        if (duelRequestTimer != null) {
-            sender.sendMessage(Text.literal("A duel is already active! Please wait.").formatted(Formatting.RED));
-            return false;
-        }
 
-        if (DuelMapManager.getMap(mapName).getSpawn1() == null || DuelMapManager.getMap(mapName).getSpawn2() == null) {
-            sender.sendMessage(Text.literal("Duel locations are not set! Admins need to set them first.").formatted(Formatting.RED));
-            return false;
-        }
+
+    // GETTERS
+
+    public boolean isDuelOngoing() {
+        return duelOngoing;
+    }
+
+    public boolean isDuelRequestActive() {
+        return duelRequestActive;
+    }
+
+    public boolean hasMap(String mapName) { return dmm.hasMap(mapName); }
+
+    public boolean isServerRestarting() { return serverRestarting; }
+
+    public boolean isItemBanned(String usedItem) { return dbm.isItemBanned(usedItem); }
+
+    public Map<UUID, Integer> getDuelLives() {
+        return duelLives;
+    }
+
+    public String listMaps() { return dmm.listMaps(); }
+
+    public DuelMap getMap(String mapName) { return dmm.getMap(mapName); }
+
+    public HashSet<String> getAllowedWagerItems() { return dwm.getAllowedWagerItems(); }
+
+    public Set<String> getBannedItems() { return dbm.getBannedItems(); }
+
+    public ItemStack getChallengersWager() { return dwm.getOnlineWagers().get(challenger.getUuid()); }
+
+    public ServerPlayerEntity getChallenged() { return challenged; }
+
+    public ServerPlayerEntity getChallenger() {return  challenger; }
+
+    public Set<UUID> getOnlinePlayersNeedTele() { return dtm.getOnlinePlayersNeedTele(); }
+
+    public HashMap<String, DuelMap> getMaps() { return dmm.getMaps(); }
+
+    public DuelMap getSelectedMap() { return  selectedMap; }
+
+
+
+
+
+    //SETTERS
+
+    public void setIsServerRestarting(boolean b) { serverRestarting = b; }
+
+    public void addMap(String mapName, ServerWorld dim) { dmm.addMap(mapName, dim); }
+
+    public void removeMap(String mapName) { dmm.removeMap(mapName); }
+
+    public void addBannedItem(String id) { dbm.addBannedItem(id); }
+
+    public void removeBannedItem(String id) { dbm.removeBannedItem(id); }
+
+
+
+    // METHODS
+
+    public void sendDuelRequest(ServerPlayerEntity sender, ServerPlayerEntity receiver, String mapName, ItemStack wageredStack) {
 
         challenger = sender;
         challenged = receiver;
-        selectedMap = DuelMapManager.getMap(mapName);
-        sender.sendMessage(Text.literal("You challenged " + receiver.getName().getString() + " to a duel at " + mapName + "!").formatted(Formatting.GREEN));
-        receiver.sendMessage(Text.literal(sender.getName().getString() + " has challenged you to a duel at " + mapName + "! Type /duel accept to fight.").formatted(Formatting.GOLD));
+        selectedMap = dmm.getMap(mapName);
+        duelRequestActive = true;
+
+        if (wageredStack != null) {
+            dwm.collect(challenger, wageredStack);
+        }
+
+        challenger.sendMessage(Text.literal("You challenged " + receiver.getName().getString() + " to a duel at " + mapName + "!").formatted(Formatting.GREEN));
+        challenged.sendMessage(Text.literal(
+                sender.getName().getString() + " has challenged you to a duel at " + mapName + "!" +
+                        (getChallengersWager() != null ? " The wager on the match is " + getChallengersWager().getCount() + " " + getChallengersWager().getItem().toString() + "." : "") +
+                        " Type /duel accept to fight!"
+        ).formatted(Formatting.GOLD));
+
 
         // Start timeout countdown (30 seconds)
-        duelRequestTimer = new Timer();
         duelRequestTimer.schedule(new TimerTask() {
             @Override
             public void run() {
-                cancelDuelRequest();
                 sender.sendMessage(Text.literal("Duel request timed out.").formatted(Formatting.RED));
                 receiver.sendMessage(Text.literal("Duel request timed out.").formatted(Formatting.RED));
+                cancelDuelRequest();
             }
         }, 30_000); // 30 seconds
-
-        return true;
     }
 
-    public static void cancelDuelRequest() {
-        if (duelRequestTimer != null) {
-            duelRequestTimer.cancel();
-            duelRequestTimer = null;
+    public void cancelDuelRequest() {
+        duelRequestTimer.cancel();
+        duelRequestActive = false;
+        if (getChallengersWager() != null) {
+            dwm.refundAllOnlinePlayers();
         }
-        challenger = null;
-        challenged = null;
-        selectedMap = null;
+        resetDuelState();
     }
 
-    public static boolean acceptDuel(ServerPlayerEntity player) {
-        if (duelRequestTimer == null || challenged == null || challenger == null) {
-            player.sendMessage(Text.literal("No active duel request!").formatted(Formatting.RED));
-            return false;
-        }
-
-        if (!player.equals(challenged)) {
-            player.sendMessage(Text.literal("You were not challenged to a duel!").formatted(Formatting.RED));
-            return false;
-        }
+    public void acceptDuel() {
 
         duelRequestTimer.cancel();
-        duelRequestTimer = null;
+        duelRequestActive = false;
 
-        originalPos.put(challenged.getUuid(), challenged.getBlockPos());
-        originalPos.put(challenger.getUuid(), challenger.getBlockPos());
+        duelOngoing = true;
 
-        originalWorld.put(challenged.getUuid(), challenged.getServerWorld());
-        originalWorld.put(challenger.getUuid(), challenger.getServerWorld());
-
-
-        challenger.teleport(selectedMap.getWorld(), selectedMap.getSpawn1().getX() + 0.5, selectedMap.getSpawn1().getY(), selectedMap.getSpawn1().getZ() + 0.5, challenger.getYaw(), challenger.getPitch());
-        challenged.teleport(selectedMap.getWorld(), selectedMap.getSpawn2().getX() + 0.5, selectedMap.getSpawn2().getY(), selectedMap.getSpawn2().getZ() + 0.5, challenged.getYaw(), challenged.getPitch());
+        dtm.teleportDuelers(challenger, challenged, selectedMap);
 
         challenger.sendMessage(Text.literal("Duel accepted! You have been teleported to " + selectedMap.getName() + ".").formatted(Formatting.GREEN));
         challenged.sendMessage(Text.literal("Duel accepted! You have been teleported to " + selectedMap.getName() + ".").formatted(Formatting.GREEN));
 
-        Text message = Text.literal("⚔️ A duel is starting in " + selectedMap.getName() + " between "
-                        + challenger.getEntityName() + " and " + challenged.getEntityName() + "! Use '/duel watch' to catch the action! ⚔️")
+        Text message = Text.literal("A duel is starting in " + selectedMap.getName() + " between "
+                        + challenger.getEntityName() + " and "
+                        + challenged.getEntityName() + "! Use '/duel spectate' to catch the action!")
                 .styled(style -> style.withColor(0xFF5555).withBold(true));
 
         for (ServerPlayerEntity onlinePlayer : selectedMap.getWorld().getServer().getPlayerManager().getPlayerList()) {
@@ -111,34 +164,32 @@ public class DuelManager {
             }
         }
 
-        new Thread(() -> {
-            try {
-                for (int i = 5; i > 0; i--) {
-                    Text countdownMessage = Text.literal("Duel starts in: " + i).formatted(Formatting.GOLD);
+        for (int i = 5; i > 0; i--) {
+            int countdown = i;
+
+            countdownTimer.schedule(new TimerTask() {
+                @Override
+                public void run() {
+                    Text countdownMessage = Text.literal("Duel starts in: " + countdown).formatted(Formatting.GOLD);
                     challenger.sendMessage(countdownMessage);
                     challenged.sendMessage(countdownMessage);
-                    Thread.sleep(1000); // 1 second delay
                 }
+            }, (5 - countdown) * 1000L);
+        }
 
-                Text startMessage = Text.literal("⚔️ FIGHT! ⚔️").formatted(Formatting.RED, Formatting.BOLD);
-                challenger.sendMessage(startMessage);
-                challenged.sendMessage(startMessage);
+        Text startMessage = Text.literal("FIGHT!").formatted(Formatting.RED, Formatting.BOLD);
+        challenger.sendMessage(startMessage);
+        challenged.sendMessage(startMessage);
 
-                StartDuelTimer();
+        startDuel();
 
-            } catch (InterruptedException e) {
-                e.printStackTrace();
-            }
-        }).start();
-        return true;
     }
 
-    private static void StartDuelTimer() {
+    private void startDuel() {
         // Set lives to 5 for both players
-        playerLives.put(challenger.getUuid(), 5);
-        playerLives.put(challenged.getUuid(), 5);
+        duelLives.put(challenger.getUuid(), 5);
+        duelLives.put(challenged.getUuid(), 5);
 
-        duelTimer = new Timer();
         duelTimer.schedule(new TimerTask() {
             @Override
             public void run() {
@@ -147,97 +198,169 @@ public class DuelManager {
         }, 600_000); // 10 minutes
     }
 
-    public static boolean addSpectator(ServerPlayerEntity player) {
-        if (duelTimer != null) {
-            originalPos.put(player.getUuid(), player.getBlockPos());
-            originalWorld.put(player.getUuid(), player.getServerWorld());
-            player.teleport(selectedMap.getWorld(), selectedMap.getViewingSpawn().getX(), selectedMap.getViewingSpawn().getY(), selectedMap.getViewingSpawn().getZ(), player.getYaw(), player.getPitch());
-            return true;
-        }
-        return false;
-    }
+    public void onPlayerDeath(ServerPlayerEntity player) {
+        UUID id = player.getUuid();
 
-    public static void onPlayerDeath(ServerPlayerEntity player) {
-        if (!playerLives.containsKey(player.getUuid())) {
-            return; // Player is not in a duel
+        if (id == challenger.getUuid()) {
+            dtm.respawnChallenger(player, selectedMap);
+        } else if (id == challenged.getUuid()) {
+            dtm.respawnChallenged(player, selectedMap);
         }
 
-//still gotta tp
-        if (player.getUuid() == challenger.getUuid()) {
-            challenger.teleport(selectedMap.getWorld(), selectedMap.getSpawn1().getX() + 0.5, selectedMap.getSpawn1().getY(), selectedMap.getSpawn1().getZ() + 0.5, challenger.getYaw(), challenger.getPitch());
-        }
-        else if (player.getUuid() == challenged.getUuid()) {
-            challenged.teleport(selectedMap.getWorld(), selectedMap.getSpawn2().getX() + 0.5, selectedMap.getSpawn2().getY(), selectedMap.getSpawn2().getZ() + 0.5, challenged.getYaw(), challenged.getPitch());
-        }
-
-        int lives = playerLives.get(player.getUuid()) - 1;
-        playerLives.put(player.getUuid(), lives);
+        int lives = duelLives.get(id) - 1;
+        duelLives.put(id, lives);
 
         if (lives <= 0) {
-            endDuel(player);
+            endDuelDeaths(player);
         } else {
             player.sendMessage(Text.literal("💀 You have " + lives + " lives left!").formatted(Formatting.RED));
         }
     }
 
-    private static void endDuel(ServerPlayerEntity loser) {
+    private void endDuelDeaths(ServerPlayerEntity loser) {
         ServerPlayerEntity winner = (loser.equals(challenger)) ? challenged : challenger;
 
-        AnnounceWinner(winner);
+        handleWinnerLoser(winner.getUuid(), loser.getUuid());
 
-        ResetDuelState();
+        resetDuelState();
     }
 
-    private static void AnnounceWinner(ServerPlayerEntity winner) {
-        // Announce winner
-        Text winMessage = Text.literal("🏆 " + winner.getName().getString() + " has won the duel! 🏆").formatted(Formatting.GOLD);
-        for (ServerPlayerEntity onlinePlayer : selectedMap.getWorld().getServer().getPlayerManager().getPlayerList()) {
-            onlinePlayer.sendMessage(winMessage);
+    private void endDuelTimeout() {
+        if (duelLives.get(challenger.getUuid()) > duelLives.get(challenged.getUuid())) {
+            handleWinnerLoser(challenger.getUuid(), challenged.getUuid());
+        } else if (duelLives.get(challenger.getUuid()) < duelLives.get(challenged.getUuid())) {
+            handleWinnerLoser(challenged.getUuid(), challenger.getUuid());
+        } else {
+            announceDraw();
+            dwm.refundAllOnlinePlayers();
+        }
+
+        resetDuelState();
+
+        dtm.teleportAllOnlineBack();
+    }
+
+    public void endDuelLogout(UUID loggedOutPlayerId) {
+        if (challenger.getUuid().equals(loggedOutPlayerId)) {
+            handleWinnerLoser(challenged.getUuid(), challenger.getUuid());
+        } else {
+            handleWinnerLoser(challenger.getUuid(), challenged.getUuid());
+        }
+
+        resetDuelState();
+        dtm.teleportAllOnlineBack();
+    }
+
+    public void handleWinnerLoser(UUID winner, UUID loser) {
+        announceWinner(winner);
+        dsm.handleWinner(winner, getChallengersWager().getCount(), 5 - duelLives.get(loser), 5 - duelLives.get(winner));
+        dsm.handleLoser(loser, getChallengersWager().getCount(), 5 - duelLives.get(winner), 5 - duelLives.get(loser));
+        dwm.awardWinner(winner.equals(challenger.getUuid()) ? challenger : challenged);
+    }
+
+    public void endDuelServerRestart() {
+        announceDraw();
+        dwm.refundAllOnlinePlayers();
+        dtm.teleportAllOnlineBack();
+        resetDuelState();
+    }
+
+    private void announceWinner(UUID winner) {
+        if (winner == challenger.getUuid()) {
+            Text winMessage = Text.literal(challenger.getName().getString() + " has won the duel!").formatted(Formatting.GOLD);
+            for (ServerPlayerEntity onlinePlayer : selectedMap.getWorld().getServer().getPlayerManager().getPlayerList()) {
+                onlinePlayer.sendMessage(winMessage);
+            }
+        } else {
+            Text winMessage = Text.literal(challenged.getName().getString() + " has won the duel!").formatted(Formatting.GOLD);
+            for (ServerPlayerEntity onlinePlayer : selectedMap.getWorld().getServer().getPlayerManager().getPlayerList()) {
+                onlinePlayer.sendMessage(winMessage);
+            }
         }
     }
 
-    private static void ResetDuelState() {
-        playerLives.remove(challenger.getUuid());
-        playerLives.remove(challenged.getUuid());
-        challenger = null;
-        challenged = null;
-        selectedMap = null;
-        duelTimer.cancel();
-        duelTimer = null;
-
-        TeleportAllBack();
-    }
-
-
-    private static void endDuelTimeout() {
-        if (playerLives.get(challenger.getUuid()) > playerLives.get(challenged.getUuid())) {
-            AnnounceWinner(challenger);
-        }
-        else if (playerLives.get(challenger.getUuid()) < playerLives.get(challenged.getUuid())) {
-            AnnounceWinner(challenged);
-        }
-        else {
-            AnnounceDraw();
-        }
-
-        ResetDuelState();
-    }
-
-    private static void AnnounceDraw() {
+    private void announceDraw() {
         Text winMessage = Text.literal("The duel ended in a draw...").formatted(Formatting.GOLD);
         for (ServerPlayerEntity onlinePlayer : selectedMap.getWorld().getServer().getPlayerManager().getPlayerList()) {
             onlinePlayer.sendMessage(winMessage);
         }
     }
 
-    private static void TeleportAllBack() {
-        for (UUID id : originalWorld.keySet()) {
-            ServerWorld world = originalWorld.get(id);
-            BlockPos pos = originalPos.get(id);
-            ServerPlayerEntity player = world.getServer().getPlayerManager().getPlayer(id);
-            if (player != null) {
-                player.teleport(world, pos.getX(), pos.getY(), pos.getZ(), player.getYaw(), player.getPitch());
-            }
+    public void resetDuelState() {
+        duelLives.remove(challenger.getUuid());
+        duelLives.remove(challenged.getUuid());
+
+        challenger = null;
+        challenged = null;
+        selectedMap = null;
+
+        duelTimer.cancel();
+        duelRequestTimer.cancel();
+        countdownTimer.cancel();
+
+        duelRequestActive = false;
+        duelOngoing = false;
+
+        dtm.teleportAllOnlineBack();
+    }
+
+
+    public void handleSpectatorDisconnect(UUID playerId) {
+        dtm.handleSpectatorDisconnect(playerId);
+    }
+
+    public void teleportSpectatorInit(ServerPlayerEntity player) {
+        dtm.addSpectator(player, selectedMap);
+    }
+
+
+
+    public void saveAllAndShutdown() {
+        dtm.save();
+        dwm.save();
+        dmm.save();
+        dsm.save();
+        dbm.save();
+        resetDuelState();
+    }
+
+    public boolean checkReloggingPlayer(UUID playerId) {
+        return dtm.getReloggingPlayersNeedTele().contains(playerId);
+    }
+
+    public void checkForRefund(ServerPlayerEntity player) {
+        if (dwm.hasSavedRefund(player.getUuid())) {
+            dwm.refundSavedWager(player);
         }
+    }
+
+    public void displayStats(ServerPlayerEntity player) {
+        if (dsm.playerHasStats(player.getUuid())) {
+            dsm.showPlayerStats(player);
+        } else {
+            player.sendMessage(Text.literal("No stats found for " + player.getName() + "."));
+        }
+    }
+
+    public void displayTargetPlayerStats(ServerPlayerEntity player, ServerPlayerEntity targetPlayer) {
+        dsm.displayTargetPlayerStats(targetPlayer, player);
+    }
+
+    public boolean playerHasStats(UUID id) {
+        return dsm.playerHasStats(id);
+    }
+
+
+    public void handleSpectatorReconnect(UUID playerId) {
+        dtm.teleportReloggingPlayer(playerId);
+    }
+
+    public void setWagerItem(Item item) {
+        dwm.addAllowedWagerItem(item);
+    }
+
+
+    public void removeWagerItem(Item item) {
+        dwm.removeAllowedWagerItem(item);
     }
 }
