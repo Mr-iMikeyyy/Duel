@@ -1,72 +1,51 @@
 package net.madmike.duel;
 
-import net.fabricmc.loader.api.FabricLoader;
+import net.minecraft.registry.RegistryKey;
+import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.world.ServerWorld;
-import org.spongepowered.include.com.google.gson.Gson;
-import org.spongepowered.include.com.google.gson.GsonBuilder;
-import org.spongepowered.include.com.google.gson.JsonSyntaxException;
+import net.minecraft.world.World;
 
-import java.io.IOException;
-import java.io.Reader;
-import java.io.Writer;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.util.HashMap;
-import java.util.Set;
 
 public class DuelMapManager {
 
-    private static final Path CONFIG_PATH = FabricLoader.getInstance().getConfigDir().resolve("duel/MAPS.json");
-    private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
-    private final HashMap<String, DuelMap> duelMaps = new HashMap<>();
+    private final DuelMapState state;
 
-    /** Load the config file or create it with default values **/
-    public static DuelMapManager load() {
-        if (Files.exists(CONFIG_PATH)) {
-            try (Reader reader = Files.newBufferedReader(CONFIG_PATH)) {
-                return GSON.fromJson(reader, DuelMapManager.class);
-            } catch (IOException | JsonSyntaxException e) {
-                e.printStackTrace();
-            }
-        }
-
-        // Create a default config if file doesn't exist
-        DuelMapManager defaultConfig = new DuelMapManager();
-        defaultConfig.save();
-        return defaultConfig;
+    public DuelMapManager(MinecraftServer server) {
+        this.state = get(server);
     }
 
-    /** Save the config file **/
-    public void save() {
-        try (Writer writer = Files.newBufferedWriter(CONFIG_PATH)) {
-            GSON.toJson(this, writer);
-        } catch (IOException e) {
-            e.printStackTrace();
-        }
+    public static DuelMapState get(MinecraftServer server) {
+        ServerWorld overworld = server.getOverworld(); // always available
+        return overworld.getPersistentStateManager().getOrCreate(
+                DuelMapState::createFromNbt,
+                DuelMapState::new,
+                DuelMapState.ID
+        );
     }
 
-    public void addMap(String name, ServerWorld dim) {
-        duelMaps.put(name, new DuelMap(name, dim));
+    public void addMap(String name, RegistryKey<World> dim) {
+        state.addMap(name, dim);
     }
 
     public DuelMap getMap(String name) {
-        return duelMaps.get(name);
+        return state.getMap(name);
     }
 
     public boolean hasMap(String name) {
-        return duelMaps.containsKey(name);
+        return state.hasMap(name);
     }
 
     public String listMaps() {
-        return String.join(", ", duelMaps.keySet());
+        return state.listMaps();
     }
 
     public void removeMap(String mapName) {
-        duelMaps.remove(mapName);
+        state.removeMap(mapName);
     }
 
     public HashMap<String, DuelMap> getMaps() {
-        return duelMaps;
+        return state.getMaps();
     }
 }
 

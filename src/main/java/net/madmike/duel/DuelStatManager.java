@@ -1,106 +1,122 @@
 package net.madmike.duel;
 
-import net.fabricmc.loader.api.FabricLoader;
-import net.minecraft.item.ItemStack;
+import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.network.ServerPlayerEntity;
+import net.minecraft.server.world.ServerWorld;
 import net.minecraft.text.Text;
-import org.spongepowered.include.com.google.gson.Gson;
-import org.spongepowered.include.com.google.gson.GsonBuilder;
-import org.spongepowered.include.com.google.gson.JsonSyntaxException;
 
-import java.io.IOException;
-import java.io.Reader;
-import java.io.Writer;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.util.HashMap;
-import java.util.Map;
 import java.util.UUID;
 
 public class DuelStatManager {
-    private static final Path CONFIG_PATH = FabricLoader.getInstance().getConfigDir().resolve("duel/STATS.json");
-    private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
 
-    private  Map<UUID, DuelStat> stats = new HashMap<>();
+    private final DuelStatState state;
+    private final MinecraftServer server;
 
-    /** Load the config file or create it with default values **/
-    public static DuelStatManager load() {
-        if (Files.exists(CONFIG_PATH)) {
-            try (Reader reader = Files.newBufferedReader(CONFIG_PATH)) {
-                return GSON.fromJson(reader, DuelStatManager.class);
-            } catch (IOException | JsonSyntaxException e) {
-                e.printStackTrace();
-            }
-        }
-
-        // Create a default config if file doesn't exist
-        DuelStatManager defaultConfig = new DuelStatManager();
-        defaultConfig.save();
-        return defaultConfig;
+    public DuelStatManager(MinecraftServer server) {
+        this.server = server;
+        this.state = get(server);
     }
 
-    /** Save the config file **/
-    public void save() {
-        try (Writer writer = Files.newBufferedWriter(CONFIG_PATH)) {
-            GSON.toJson(this, writer);
-        } catch (IOException e) {
-            e.printStackTrace();
-        }
-    }
-
-    public void showPlayerStats(ServerPlayerEntity player) {
-        DuelStat stat = stats.get(player.getUuid());
-        player.sendMessage(Text.literal(player.getName() + " has " + stat.getWins() + " wins, " + stat.getLosses() + " losses, and has " +
-                (stat.getEarnings() >= 0 ? "earned " : "lost ") + Math.abs(stat.getEarnings()) + "."));
+    public static DuelStatState get(MinecraftServer server) {
+        ServerWorld overworld = server.getOverworld(); // always available
+        return overworld.getPersistentStateManager().getOrCreate(
+                DuelStatState::createFromNbt,
+                DuelStatState::new,
+                DuelStatState.ID
+        );
     }
 
     public boolean playerHasStats(UUID id) {
-        return stats.containsKey(id);
+        return state.playerHasStats(id);
     }
 
-    public void handleWinner(UUID id, Integer wager, Integer kills, Integer deaths) {
+    public void handleWinner(UUID id, Integer kills, Integer deaths) {
         DuelStat stat;
-        if (stats.containsKey(id)) {
-            stat = stats.get(id);
-        }
-        else {
+        boolean hasStat = state.playerHasStats(id);
+        if (hasStat) {
+            stat = state.getStat(id);
+        } else {
             stat = new DuelStat();
+            stat.setPlayerId(id);
         }
 
-        stat.setWins(stat.getLosses() + 1);
+
+        stat.setWins(stat.getWins() + 1);
         stat.setKills(stat.getKills() + kills);
-        stat.setEarnings(stat.getEarnings() + wager);
         stat.setDeaths(stat.getDeaths() + deaths);
 
-        if (stats.replace(id, stat) == null) {
-            stats.put(id, stat);
-        }
+        state.addOrReplaceStat(stat);
     }
 
-    public void handleLoser(UUID id, Integer wager, Integer kills, Integer deaths) {
+    public void handleLoser(UUID id, Integer kills, Integer deaths) {
         DuelStat stat;
-        if (stats.containsKey(id)) {
-            stat = stats.get(id);
-        }
-        else {
+        if (state.playerHasStats(id)) {
+            stat = state.getStat(id);
+        } else {
             stat = new DuelStat();
+            stat.setPlayerId(id);
+            stat.setPlayerName(server.getPlayerManager().getPlayer(id).getName().getString());
         }
+
 
         stat.setLosses(stat.getLosses() + 1);
         stat.setKills(stat.getKills() + kills);
-        stat.setEarnings(stat.getEarnings() - wager);
         stat.setDeaths(stat.getDeaths() + deaths);
 
-        if (stats.replace(id, stat) == null) {
-            stats.put(id, stat);
-        }
-
+        state.addOrReplaceStat(stat);
     }
 
     public void displayTargetPlayerStats(ServerPlayerEntity targetPlayer, ServerPlayerEntity player) {
-        DuelStat stat = stats.get(targetPlayer.getUuid());
-        player.sendMessage(Text.literal(targetPlayer.getName() + " has " + stat.getWins() + " wins, " + stat.getLosses() + " losses, and has " +
-                (stat.getEarnings() >= 0 ? "earned " : "lost ") + Math.abs(stat.getEarnings()) + "."));
+        DuelStat stat = state.getStat(targetPlayer.getUuid());
+        String message = """
+                §6Duel Stats for §e%s§6:
+                §7- Wins: §a%d
+                §7- Losses: §c%d
+                §7- Kills: §a%d
+                §7- Deaths: §c%d
+                §7- K/D Ratio: §b%.2f
+                """.formatted(
+                targetPlayer.getName().getString(),
+                stat.getWins(),
+                stat.getLosses(),
+                stat.getKills(),
+                stat.getDeaths(),
+                stat.getKD()
+        );
+        player.sendMessage(Text.literal(message));
 
+    }
+
+    public void showPlayerStats(ServerPlayerEntity player) {
+        DuelStat stat = state.getStat(player.getUuid());
+        String message = """
+                §6Duel Stats for §e%s§6:
+                §7- Wins: §a%d
+                §7- Losses: §c%d
+                §7- Kills: §a%d
+                §7- Deaths: §c%d
+                §7- K/D Ratio: §b%.2f
+                """.formatted(
+                player.getName().getString(),
+                stat.getWins(),
+                stat.getLosses(),
+                stat.getKills(),
+                stat.getDeaths(),
+                stat.getKD()
+        );
+        player.sendMessage(Text.literal(message));
+    }
+
+    public HashMap<UUID, DuelStat> getStats() {
+        return state.getStats();
+    }
+
+    public void deleteAllStats() {
+        state.deleteAllStats();
+    }
+
+    public void deleteStat(UUID uuid) {
+        state.deleteStat(uuid);
     }
 }
